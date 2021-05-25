@@ -139,14 +139,14 @@ def process_tfidf_similarity(document, base_document):
     document = [document]
     document.insert(0, base_document)
     embeddings = vectorizer.fit_transform(document)
-    cosine_similarities = cosine_similarity(embeddings[0:1], embeddings[1:]).flatten()
-    return cosine_similarities
+    tfidf_sims = cosine_similarity(embeddings[0:1], embeddings[1:]).flatten()
+    return tfidf_sims
 
 
 def preprocess(text):
     # Steps:
     # 1. lowercase
-    # 2. Lammetize. (It does not stem. Try to preserve structure not to overwrap with potential acronym).
+    # 2. Lemmatize. (It does not stem. Try to preserve structure not to overwrap with potential acronym).
     # 3. Remove stop words.
     # 4. Remove punctuations.
     # 5. Remove character with the length size of 1.
