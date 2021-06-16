@@ -1,7 +1,9 @@
+import collections
 import os
 import string
 import gensim
 import numpy as np
+import sklearn.feature_extraction.text
 from gensim.models.doc2vec import Doc2Vec
 import gensim.downloader as api
 import gensim.corpora as corpora
@@ -12,10 +14,12 @@ import nltk
 import spacy
 
 nltk.download('stopwords')
+nltk.download('words')
 nltk.download('wordnet')
 nltk.download('punkt')
 
 from nltk.corpus import stopwords
+from nltk.corpus import words
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 
@@ -192,57 +196,76 @@ def process_word_movers_distance(document, query_document):
     return distance
 
 
-def compute_maximal_marginal_relevance(candidate_string, query, number_of_sentences=1, lambda_constant=0.5,
-                                       sim=process_tfidf_similarity):
-    """
-    Return ranked phrases using MMR. Cosine similarity is used as similarity measure.
-    :param sim: similarity function to use for MMR
-    :param query: Query sentence
-    :param candidate_string: list of candidate sentences
-    :param lambda_constant: 0.5 to balance diversity and accuracy. if lambda_constant is high, then higher accuracy. If lambda_constant is low then high diversity.
-    :param number_of_sentences: text from which to calculate the number of terms to include in result set
-    :return: Ranked phrases with score
-    """
+def is_all_stopwords(doc):
+    isallpunct = True
+    isalloneletter = True
+    isallstopwords = True
+    for x in doc.split():
+        if x not in string.punctuation:
+            isallpunct = False
+        if len(x) > 1:
+            isalloneletter = False
+        if x not in stop_words:
+            isallstopwords = False
+    return isallstopwords \
+        or isallpunct \
+        or isalloneletter \
+        or len(doc) <= 3 \
+        or doc.isspace()
 
+
+def compute_maximal_marginal_relevance(candidate_string, query, number_of_sentences=10, lambda_constant=1,
+                                       sim=process_tfidf_similarity, mmr_percentage=0.1):
     candidate_list = tokenizer.tokenize(candidate_string)
+
     if not candidate_list or candidate_list is None or len(candidate_list) == 0:
         return ['']
 
-    # Find best sentence to start
+    if sim == process_tfidf_similarity:
+        candidate_list = [x for x in candidate_list if not is_all_stopwords(x)]
+
+    mmr_number = max(1, int(round(number_of_sentences * mmr_percentage)))
+
+    # Find best sentence to start, focused on relevance since there are
+    #   no selected sentences to compare to
     initial_best_sentence = candidate_list[0]
     prev = float("-inf")
-
     for sent in candidate_list[:]:
         similarity = sim(sent, query)
         if similarity > prev:
             initial_best_sentence = sent
             prev = similarity
-
     try:
         candidate_list.remove(initial_best_sentence)
     except ValueError:
-        pass    # do nothing
+        pass  # do nothing
+
     sentences_to_return = [initial_best_sentence]
 
-    # Now find the prescribed number of best sentences
-    for i in range(1, number_of_sentences):
-        best_line = None
-        previous_marginal_relevance = float("-inf")
+    if mmr_number > 1:
+        for i in range(1, mmr_number):
+            previous_marginal_relevance = float("-inf")
+            best_line = None
+            stand_in = None
+            for sent in candidate_list:
+                stand_in = sent
+                # Calculate the Marginal Relevance
+                left_side = lambda_constant * sim(sent, query)
+                right_values = [float("-inf")]
+                for selected_sentence in sentences_to_return:
+                    right_values.append((1 - lambda_constant) * sim(selected_sentence, sent))
+                right_side = max(right_values)
+                current_marginal_relevance = left_side - right_side
+                # Maximize Marginal Relevance
+                if current_marginal_relevance > previous_marginal_relevance:
+                    previous_marginal_relevance = current_marginal_relevance
+                    best_line = sent
+            # Update the returned sentences
+            if best_line is None:
+                best_line = stand_in
+            if len(candidate_list) > 0:
+                sentences_to_return += [best_line]
+                candidate_list.remove(best_line)
 
-        for sent in candidate_list[:]:
-            # Calculate the Marginal Relevance
-            left_side = lambda_constant * sim(sent, query)
-            right_values = [float("-inf")]
-            for selected_sentence in sentences_to_return:
-                right_values.append((1 - lambda_constant) * sim(selected_sentence, query))
-            right_side = max(right_values)
-            current_marginal_relevance = left_side - right_side
-
-            # Maximize Marginal Relevance
-            if current_marginal_relevance > previous_marginal_relevance:
-                previous_marginal_relevance = current_marginal_relevance
-                best_line = sent
-        sentences_to_return += [best_line]
-        candidate_list.remove(best_line)
-
+    sentences_to_return += candidate_list[:number_of_sentences-mmr_number]
     return sentences_to_return
