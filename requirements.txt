@@ -1,6 +1,6 @@
 transformers==4.3.3
 argparse~=1.4.0
-datasets~=1.2.0
+datasets==1.2.0
 pandas~=0.24.2
 rouge~=1.0.0
 sacrebleu~=1.4.14
@@ -8,7 +8,7 @@ rouge-score~=0.0.4
 keras==2.4.3
 sentencepiece~=0.1.95
 torch
-jsonlines~=2.0.0
+jsonlines==2.0.0
 word-mover-distance~=0.0.2
 gensim~=3.8.3
 scikit-learn~=0.24.1
@@ -27,4 +27,7 @@ setuptools~=51.1.2
 dataclasses
 requests~=2.21.0
 bert-extractive-summarizer~=0.7.1
-langdetect
+langdetect==1.0.8
+neptune-client==0.9.16
+neptune-contrib
+scikit-optimize==0.8.1
