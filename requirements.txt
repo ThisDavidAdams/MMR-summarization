@@ -14,7 +14,7 @@ gensim~=3.8.3
 scikit-learn~=0.24.1
 spacy==3.0.3
 smart-open==4.2.0
-tensorflow==1.15.3
+tensorflow==2.4.2
 tensorflow-gpu==1.15.0
 numpy~=1.19.3
 nltk~=3.5
