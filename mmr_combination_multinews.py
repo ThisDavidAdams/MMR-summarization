@@ -3,17 +3,72 @@ import torch
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, load_metric
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModel, pipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from torch import cuda
 import argparse
 import json
 import jsonlines
 import nltk
-from mmr_filter import compute_maximal_marginal_relevance, process_LDA_topics, process_doc2vec_similarity, process_tfidf_similarity
+from mmr_filter import compute_maximal_marginal_relevance, process_LDA_topics, process_doc2vec_similarity, \
+    process_tfidf_similarity
 from summarizer import TransformerSummarizer
 from langdetect import detect
 
 nltk_tokenizer = nltk.data.load('tokenizers/punkt/english.pickle')
+
+
+# Function to reduce a model's output by a certain percentage using MMR.
+def reduce(summary, query, reduction, lambdac=0.9, sim_var=process_doc2vec_similarity):
+    return " ".join(compute_maximal_marginal_relevance(summary,
+                                                       query,
+                                                       max(1,
+                                                           len(nltk_tokenizer.tokenize(
+                                                               summary)) - int(
+                                                               round((reduction * len(
+                                                                   nltk_tokenizer.tokenize(
+                                                                       summary)))))),
+                                                       lambda_constant=lambdac,
+                                                       sim=sim_var,
+                                                       mmr_percentage=1)).replace('\n', ' ')
+
+
+# Dataset for model outputs
+def collate_fn(batch):
+    batch_list = []
+    for item in batch:
+        batch_list.append({"text": item["text"],
+                           "ext_summary": item["ext_summary"],
+                           "concat_text": item["concat_text"],
+                           "gold_summary": item["gold_summary"]})
+    return batch_list
+
+
+class SplitTestDataset(Dataset):
+    def __init__(self, dataframe, articles_dataframe):
+        self.data = dataframe
+        self.ext_summary = self.data['ext_summary']
+
+        self.articles_data = articles_dataframe
+        self.text = self.articles_data['document']
+        self.gold = self.articles_data['summary']
+
+    def __len__(self):
+        return len(self.text)
+
+    def __getitem__(self, index):
+        text = self.text[index]
+        ext_summary = self.ext_summary[index]
+        gold = self.gold[index]
+
+        # Here's the only part that really matters:
+        #       What get_item returns. The inputs, the attention mask, and the outputs.
+        #       These will be different depending on what the model being used takes.
+        return {
+            'text': text,
+            'ext_summary': ext_summary,
+            'concat_text': ext_summary + text,
+            'gold_summary': gold
+        }
 
 
 def main():
@@ -43,12 +98,22 @@ def main():
                         help='file to write summaries to')
     parser.add_argument('--rouge_file', type=str, default='outputs/mmr_combination_rougescores.txt',
                         help='file to write rouge scores to')
-    parser.add_argument('--rouge', action='store_true')
-    parser.add_argument('--cloud', action='store_true')
-    parser.add_argument('--mmr_reduction', action='store_true')
-    parser.add_argument('--mmr_only', action='store_true')
-    parser.add_argument('--models_only', action='store_true')
-    parser.add_argument('--rouge_only', action='store_true')
+    parser.add_argument('--rouge', action='store_true',
+                        help='Whether to calculate rouge in addition to other tasks.')
+    parser.add_argument('--cloud', action='store_true',
+                        help='Whether or not the script is running on Google Colab.')
+    parser.add_argument('--mmr_reduction', type=float, default=0.01,
+                        help='The percentage of each model output to reduce by using MMR.'
+                             'If 0, no mmr_reduction will take place at all.')
+    parser.add_argument('--mmr_only', action='store_true',
+                        help='Whether to only add the MMR output to the given summaries'
+                             'in the input file. If absent, will generate model outputs also.')
+    parser.add_argument('--models_only', action='store_true',
+                        help='Whether to only generate model outputs and not add MMR output.'
+                             'If absent, will generate MMR output also.')
+    parser.add_argument('--rouge_only', action='store_true',
+                        help='Whether to generate the rouge scores without affecting the input in any way.'
+                             'If absent, something will be generated depending on what other arguments are active.')
     args = parser.parse_args()
 
     # Define similarity measure to use for overall mmr combination
@@ -197,7 +262,8 @@ def main():
         # T5
         t5_summarizer = pipeline("summarization", model="t5-large", tokenizer="t5-large", framework="pt", device=0)
         # BART
-        bart_summarizer = pipeline("summarization", model="facebook/bart-large-cnn", tokenizer="facebook/bart-large-cnn",
+        bart_summarizer = pipeline("summarization", model="facebook/bart-large-cnn",
+                                   tokenizer="facebook/bart-large-cnn",
                                    framework="pt", device=0)
         # GPT2
         gpt2_summarizer = TransformerSummarizer(transformer_type="GPT2", transformer_model_key="gpt2")
@@ -209,43 +275,6 @@ def main():
         # LED
         led_summarizer = pipeline("summarization", model="allenai/led-base-16384", tokenizer="allenai/led-base-16384",
                                   framework="pt", device=0)
-
-        # Dataset for model outputs
-        def collate_fn(batch):
-            batch_list = []
-            for item in batch:
-                batch_list.append({"text": item["text"],
-                                   "ext_summary": item["ext_summary"],
-                                   "concat_text": item["concat_text"],
-                                   "gold_summary": item["gold_summary"]})
-            return batch_list
-
-        class SplitTestDataset(Dataset):
-            def __init__(self, dataframe, articles_dataframe):
-                self.data = dataframe
-                self.ext_summary = self.data['ext_summary']
-
-                self.articles_data = articles_dataframe
-                self.text = self.articles_data['document']
-                self.gold = self.articles_data['summary']
-
-            def __len__(self):
-                return len(self.text)
-
-            def __getitem__(self, index):
-                text = self.text[index]
-                ext_summary = self.ext_summary[index]
-                gold = self.gold[index]
-
-                # Here's the only part that really matters:
-                #       What get_item returns. The inputs, the attention mask, and the outputs.
-                #       These will be different depending on what the model being used takes.
-                return {
-                    'text': text,
-                    'ext_summary': ext_summary,
-                    'concat_text': ext_summary + text,
-                    'gold_summary': gold
-                }
 
         # Load the datasets for model outputs
         test_set = load_dataset('json', data_files=args.matchsum_file, split='train')
@@ -325,80 +354,28 @@ def main():
                                 bart_summarizer(document[:1024], truncation=True, max_length=300, do_sample=False)[0][
                                     'summary_text']) + " " + bart_summary
 
-                    if args.mmr_reduction:
-                        ext_summary_reduced = " ".join(compute_maximal_marginal_relevance(ext_summary,
-                                                                                          lda_topic_words,
-                                                                                          max(1,
-                                                                                              len(nltk_tokenizer.tokenize(
-                                                                                                  batch[
-                                                                                                      'ext_summary'])) - 1),
-                                                                                          lambda_constant=args.lambdac,
-                                                                                          sim=process_doc2vec_similarity,
-                                                                                          mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        peg_ind_summary_reduced = " ".join(compute_maximal_marginal_relevance(peg_ind_summary,
-                                                                                              lda_topic_words,
-                                                                                              max(1,
-                                                                                                  len(nltk_tokenizer.tokenize(
-                                                                                                      peg_ind_summary)) - 1),
-                                                                                              lambda_constant=args.lambdac,
-                                                                                              sim=process_doc2vec_similarity,
-                                                                                              mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        t5_summary_reduced = " ".join(compute_maximal_marginal_relevance(t5_summary,
-                                                                                         lda_topic_words,
-                                                                                         max(1, len(nltk_tokenizer.tokenize(
-                                                                                             t5_summary)) - 1),
-                                                                                         lambda_constant=args.lambdac,
-                                                                                         sim=process_doc2vec_similarity,
-                                                                                         mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        xlnet_summary_reduced = " ".join(compute_maximal_marginal_relevance(xlnet_summary,
-                                                                                            lda_topic_words,
-                                                                                            max(1,
-                                                                                                len(nltk_tokenizer.tokenize(
-                                                                                                    xlnet_summary)) - 1),
-                                                                                            lambda_constant=args.lambdac,
-                                                                                            sim=process_doc2vec_similarity,
-                                                                                            mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        bart_summary_reduced = " ".join(compute_maximal_marginal_relevance(bart_summary,
-                                                                                           lda_topic_words,
-                                                                                           max(1,
-                                                                                               len(nltk_tokenizer.tokenize(
-                                                                                                   bart_summary)) - 1),
-                                                                                           lambda_constant=args.lambdac,
-                                                                                           sim=process_doc2vec_similarity,
-                                                                                           mmr_percentage=1)).replace(
-                            '\n', ' ')
-
-                        gpt2_summary_reduced = " ".join(compute_maximal_marginal_relevance(gpt2_summary,
-                                                                                           lda_topic_words,
-                                                                                           max(1,
-                                                                                               len(nltk_tokenizer.tokenize(
-                                                                                                   gpt2_summary)) - 1),
-                                                                                           lambda_constant=args.lambdac,
-                                                                                           sim=process_doc2vec_similarity,
-                                                                                           mmr_percentage=1)).replace(
-                            '\n', ' ')
-
-                        prophetnet_summary_reduced = " ".join(compute_maximal_marginal_relevance(prophetnet_summary,
-                                                                                                 lda_topic_words,
-                                                                                                 max(1,
-                                                                                                     len(nltk_tokenizer.tokenize(
-                                                                                                         prophetnet_summary)) - 1),
-                                                                                                 lambda_constant=args.lambdac,
-                                                                                                 sim=process_doc2vec_similarity,
-                                                                                                 mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        led_summary_reduced = " ".join(compute_maximal_marginal_relevance(led_summary,
-                                                                                          lda_topic_words,
-                                                                                          max(1,
-                                                                                              len(nltk_tokenizer.tokenize(
-                                                                                                  led_summary)) - 1),
-                                                                                          lambda_constant=args.lambdac,
-                                                                                          mmr_percentage=1)).replace(
-                            '\n', ' ')
+                    if args.mmr_reduction != 0:
+                        ext_summary_reduced = reduce(ext_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                     process_doc2vec_similarity)
+                        peg_ind_summary_reduced = reduce(peg_ind_summary, lda_topic_words, args.mmr_reduction,
+                                                         args.lambdac,
+                                                         process_doc2vec_similarity)
+                        t5_summary_reduced = reduce(t5_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                    process_doc2vec_similarity)
+                        xlnet_summary_reduced = reduce(xlnet_summary, lda_topic_words, args.mmr_reduction,
+                                                       args.lambdac,
+                                                       process_doc2vec_similarity)
+                        bart_summary_reduced = reduce(bart_summary, lda_topic_words, args.mmr_reduction,
+                                                      args.lambdac,
+                                                      process_doc2vec_similarity)
+                        gpt2_summary_reduced = reduce(gpt2_summary, lda_topic_words, args.mmr_reduction,
+                                                      args.lambdac,
+                                                      process_doc2vec_similarity)
+                        prophetnet_summary_reduced = reduce(prophetnet_summary, lda_topic_words, args.mmr_reduction,
+                                                            args.lambdac,
+                                                            process_doc2vec_similarity)
+                        led_summary_reduced = reduce(led_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                     process_tfidf_similarity)
 
                         full_sequence = pegasus_summary \
                                         + " " + bart_summary_reduced \
@@ -422,13 +399,16 @@ def main():
 
                     if not args.models_only:
                         best_string = " ".join(compute_maximal_marginal_relevance(full_sequence,
-                                                                                  lda_topic_words, len(nltk_tokenizer.tokenize(
-                                                                                    pegasus_summary)) + max(1, int(round(
-                                                                                       len(nltk_tokenizer.tokenize(
-                                                                                         pegasus_summary)) * args.percentage))),
+                                                                                  lda_topic_words,
+                                                                                  len(nltk_tokenizer.tokenize(
+                                                                                      pegasus_summary)) + max(1,
+                                                                                                              int(round(
+                                                                                                                  len(nltk_tokenizer.tokenize(
+                                                                                                                      pegasus_summary)) * args.percentage))),
                                                                                   lambda_constant=args.lambdac,
                                                                                   sim=sim_argument,
-                                                                                  mmr_percentage=args.percentage)).replace('\n', ' ')
+                                                                                  mmr_percentage=args.percentage)).replace(
+                            '\n', ' ')
 
                         # OUTPUT writing
                         sd.write(json.dumps({"ind_number": ind_number,
@@ -521,81 +501,28 @@ def main():
                         print("mmr peg_ind_summary : " + peg_ind_summary)
                         print("mmr ext_summary : " + ext_summary)
 
-                    if args.mmr_reduction:
-                        ext_summary_reduced = " ".join(compute_maximal_marginal_relevance(ext_summary,
-                                                                                          lda_topic_words,
-                                                                                          max(1,
-                                                                                              len(nltk_tokenizer.tokenize(
-                                                                                                  batch[
-                                                                                                      'ext_summary'])) - 1),
-                                                                                          lambda_constant=args.lambdac,
-                                                                                          sim=process_doc2vec_similarity,
-                                                                                          mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        peg_ind_summary_reduced = " ".join(compute_maximal_marginal_relevance(peg_ind_summary,
-                                                                                              lda_topic_words,
-                                                                                              max(1,
-                                                                                                  len(nltk_tokenizer.tokenize(
-                                                                                                      peg_ind_summary)) - 1),
-                                                                                              lambda_constant=args.lambdac,
-                                                                                              sim=process_doc2vec_similarity,
-                                                                                              mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        t5_summary_reduced = " ".join(compute_maximal_marginal_relevance(t5_summary,
-                                                                                         lda_topic_words,
-                                                                                         max(1, len(nltk_tokenizer.tokenize(
-                                                                                             t5_summary)) - 1),
-                                                                                         lambda_constant=args.lambdac,
-                                                                                         sim=process_doc2vec_similarity,
-                                                                                         mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        xlnet_summary_reduced = " ".join(compute_maximal_marginal_relevance(xlnet_summary,
-                                                                                            lda_topic_words,
-                                                                                            max(1,
-                                                                                                len(nltk_tokenizer.tokenize(
-                                                                                                    xlnet_summary)) - 1),
-                                                                                            lambda_constant=args.lambdac,
-                                                                                            sim=process_doc2vec_similarity,
-                                                                                            mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        bart_summary_reduced = " ".join(compute_maximal_marginal_relevance(bart_summary,
-                                                                                           lda_topic_words,
-                                                                                           max(1,
-                                                                                               len(nltk_tokenizer.tokenize(
-                                                                                                   bart_summary)) - 1),
-                                                                                           lambda_constant=args.lambdac,
-                                                                                           sim=process_doc2vec_similarity,
-                                                                                           mmr_percentage=1)).replace(
-                            '\n', ' ')
-
-                        gpt2_summary_reduced = " ".join(compute_maximal_marginal_relevance(gpt2_summary,
-                                                                                           lda_topic_words,
-                                                                                           max(1,
-                                                                                               len(nltk_tokenizer.tokenize(
-                                                                                                   gpt2_summary)) - 1),
-                                                                                           lambda_constant=args.lambdac,
-                                                                                           sim=process_doc2vec_similarity,
-                                                                                           mmr_percentage=1)).replace(
-                            '\n', ' ')
-
-                        prophetnet_summary_reduced = " ".join(compute_maximal_marginal_relevance(prophetnet_summary,
-                                                                                                 lda_topic_words,
-                                                                                                 max(1,
-                                                                                                     len(nltk_tokenizer.tokenize(
-                                                                                                         prophetnet_summary)) - 1),
-                                                                                                 lambda_constant=args.lambdac,
-                                                                                                 sim=process_doc2vec_similarity,
-                                                                                                 mmr_percentage=1)).replace(
-                            '\n', ' ')
-                        led_summary_reduced = " ".join(compute_maximal_marginal_relevance(led_summary,
-                                                                                          lda_topic_words,
-                                                                                          max(1,
-                                                                                              len(nltk_tokenizer.tokenize(
-                                                                                                  led_summary)) - 1),
-                                                                                          lambda_constant=args.lambdac,
-                                                                                          mmr_percentage=1)).replace(
-                            '\n', ' ')
-
+                    if args.mmr_reduction != 0:
+                        ext_summary_reduced = reduce(ext_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                     process_doc2vec_similarity)
+                        peg_ind_summary_reduced = reduce(peg_ind_summary, lda_topic_words, args.mmr_reduction,
+                                                         args.lambdac,
+                                                         process_doc2vec_similarity)
+                        t5_summary_reduced = reduce(t5_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                    process_doc2vec_similarity)
+                        xlnet_summary_reduced = reduce(xlnet_summary, lda_topic_words, args.mmr_reduction,
+                                                       args.lambdac,
+                                                       process_doc2vec_similarity)
+                        bart_summary_reduced = reduce(bart_summary, lda_topic_words, args.mmr_reduction,
+                                                      args.lambdac,
+                                                      process_doc2vec_similarity)
+                        gpt2_summary_reduced = reduce(gpt2_summary, lda_topic_words, args.mmr_reduction,
+                                                      args.lambdac,
+                                                      process_doc2vec_similarity)
+                        prophetnet_summary_reduced = reduce(prophetnet_summary, lda_topic_words, args.mmr_reduction,
+                                                            args.lambdac,
+                                                            process_doc2vec_similarity)
+                        led_summary_reduced = reduce(led_summary, lda_topic_words, args.mmr_reduction, args.lambdac,
+                                                     process_tfidf_similarity)
                         full_sequence = pegasus_summary \
                                         + " " + bart_summary_reduced \
                                         + " " + t5_summary_reduced \
@@ -617,14 +544,15 @@ def main():
                                         + " " + led_summary
 
                     mmr_length = len(nltk_tokenizer.tokenize(pegasus_summary)) + max(1, int(round(
-                                                                                       len(nltk_tokenizer.tokenize(
-                                                                                         pegasus_summary)) * args.percentage)))
+                        len(nltk_tokenizer.tokenize(
+                            pegasus_summary)) * args.percentage)))
                     best_string = " ".join(compute_maximal_marginal_relevance(full_sequence,
                                                                               lda_topic_words, mmr_length,
                                                                               lambda_constant=args.lambdac,
                                                                               sim=sim_argument,
-                                                                              mmr_percentage=args.percentage)).replace('\n',
-                                                                                                                       ' ')
+                                                                              mmr_percentage=args.percentage)).replace(
+                        '\n',
+                        ' ')
                     # OUTPUT writing
                     sd.write(json.dumps({"ind_number": ind_number,
                                          "text": batch["text"],
