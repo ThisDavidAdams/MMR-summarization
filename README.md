@@ -9,12 +9,12 @@ This is the repository for our research involving the combination of state-of-th
 
 # To Use
 There are two experiments included in this repository:
-* The Multi-News experiment, which uses the Multi-News dataset.
+* The Multi-News experiment, which uses the [Multi-News dataset](https://github.com/maszhongming/MatchSum).
   * mmr_combination_multinews.ipynb is a notebook which contains instructions for running the code in colab, assuming you have the source files in your Google Drive in a MMRSumm folder.
   * mmr_combination_multinews.py is the source code for the experiment. This file should be in your cloud drive.
   * optimize_mmr_combination_multinews.py is the script for optimizing the experiment. This file should also be in your cloud drive.
   * mmr_filter.py is used by both other scripts, and contains the code to perform the MMR calculations. This file should also be in your cloud drive.
 
-* The WCEP experiment, which uses the WCEP dataset.
+* The WCEP experiment, which uses the [WCEP dataset](https://github.com/complementizer/wcep-mds-dataset).
   * WCEP_Dataset.ipynb is a notebook containing code which prepares the WCEP dataset in your Google Drive MMRSumm folder.
   * WCEP_MMR_Summarisation.ipynb is a notebook containing code which sumnmarizes, optimizes, and analyzes the performance of MMR-combined summarization of the WCEP dataset.
